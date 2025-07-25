@@ -1,0 +1,10 @@
+useful sources
+
+good lecture and corresponding slides
+https://www.matthewpeterkelly.com/tutorials/trajectoryOptimization/cartPoleCollocation.svg#frame1087
+https://www.youtube.com/watch?v=wlkRYMVUZTs
+
+https://underactuated.csail.mit.edu/trajopt.html
+
+https://en.wikipedia.org/wiki/Optimal_control
+
