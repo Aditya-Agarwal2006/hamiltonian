@@ -12,14 +12,20 @@ image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 _, image_bin = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
 # image_bin = cv2.morphologyEx(image_bin, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))  # Uncomment if you see speckles
 
-# 3. Find the contours of the boundaries
-contours, _ = cv2.findContours(image_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-# 4. Filter for the two largest contours (inner and outer boundaries)
-contours = sorted(contours, key=cv2.contourArea, reverse=True)[:2]
+# 3. Find the contours of the boundaries (outer and inner)
+contours, hierarchy = cv2.findContours(image_bin, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+main_contours = []
+if hierarchy is not None:
+    hierarchy = hierarchy[0]
+    for i, h in enumerate(hierarchy):
+        # h[3] == -1 means outermost, h[3] != -1 means it's a hole (inner edge)
+        if h[3] == -1 or h[3] >= 0:
+            main_contours.append(contours[i])
+# Sort by area and take the two largest
+main_contours = sorted(main_contours, key=cv2.contourArea, reverse=True)[:2]
 
 splines = []
-for contour in contours:
+for contour in main_contours:
     points = contour.reshape(-1, 2)
     x = points[:, 0]
     y = points[:, 1]
