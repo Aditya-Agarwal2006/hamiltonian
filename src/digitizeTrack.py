@@ -35,7 +35,7 @@ for contour in main_contours:
 # 5. Save the spline tck data to trackModels as .npz files
 os.makedirs("../trackModels", exist_ok=True)
 for i, tck in enumerate(splines):
-    np.savez(f"../trackModels/track_spline_{i}.npz", tck=np.array(tck, dtype=object))
+    np.savez(f"../trackModels/Silverstone_track_spline_{i}.npz", tck=np.array(tck, dtype=object))
 
 # 6. Visualize the results to verify
 plt.figure(figsize=(10, 10))
