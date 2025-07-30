@@ -2,25 +2,28 @@
 
 # --- 1. Imports ---
 # Import functions and data from your source modules
-from src.optimalSpeed import calculate_optimal_speed
-from src.vehicle import f1_car_parameters
-from src.visualization import plot_speed_profile
+from optimalSpeed import calculate_optimal_speed
+from vehicle import f1_car_parameters
+from visualization import plot_speed_profile
 import numpy as np
 from scipy.interpolate import splev
 import os
+from datetime import datetime
 
 def load_silverstone_track():
     """
-    Load the existing digitized Silverstone track splines and convert to waypoints.
+    Load the existing digitized Silverstone track splines and create a racing line
+    that follows the centerline between the inner and outer borders.
     """
     # Load the spline data
     spline_0 = np.load("../trackModels/Silverstone_track_spline_0.npz", allow_pickle=True)
     spline_1 = np.load("../trackModels/Silverstone_track_spline_1.npz", allow_pickle=True)
     
-    tck_outer = spline_0['tck'].item()
-    tck_inner = spline_1['tck'].item()
+    # The spline data is already in the correct format for splev
+    tck_outer = spline_0['tck']  # Use directly - it's already a (3,) array
+    tck_inner = spline_1['tck']  # Use directly - it's already a (3,) array
     
-    # Generate waypoints along the splines
+    # Generate waypoints along the splines with matching parameter values
     u = np.linspace(0, 1, 100)  # 100 waypoints per spline
     
     # Get outer boundary points
@@ -31,18 +34,18 @@ def load_silverstone_track():
     x_inner, y_inner = splev(u, tck_inner)
     inner_points = np.column_stack([x_inner, y_inner])
     
-    # Combine both boundaries and calculate curvature
-    all_points = np.vstack([outer_points, inner_points])
+    # Calculate the centerline racing line between the borders
+    # This is the path that the vehicle should follow
+    centerline_points = (outer_points + inner_points) / 2.0
     
-    # Calculate curvature for each point (simplified - you might want to improve this)
-    # For now, we'll use a simple approximation
-    curvatures = np.zeros(len(all_points))
+    # Calculate curvature for the centerline
+    curvatures = np.zeros(len(centerline_points))
     
     # Calculate approximate curvature using finite differences
-    for i in range(1, len(all_points) - 1):
-        p_prev = all_points[i-1]
-        p_curr = all_points[i]
-        p_next = all_points[i+1]
+    for i in range(1, len(centerline_points) - 1):
+        p_prev = centerline_points[i-1]
+        p_curr = centerline_points[i]
+        p_next = centerline_points[i+1]
         
         # Vectors
         v1 = p_curr - p_prev
@@ -59,10 +62,10 @@ def load_silverstone_track():
             # Curvature = cross product / (dist1 * dist2 * (dist1 + dist2))
             curvatures[i] = cross_mag / (dist1 * dist2 * (dist1 + dist2) + 1e-10)
     
-    # Create track_data array: [x, y, curvature]
-    track_data = np.column_stack([all_points, curvatures])
+    # Create track_data array: [x, y, curvature] for the centerline racing line
+    track_data = np.column_stack([centerline_points, curvatures])
     
-    return track_data
+    return track_data, outer_points, inner_points
 
 def main():
     """
@@ -72,7 +75,7 @@ def main():
 
     # --- 2. Load Existing Digitized Track ---
     print("\n[Step 1] Loading existing Silverstone track data...")
-    track_data = load_silverstone_track()
+    track_data, outer_points, inner_points = load_silverstone_track()
     print(f"Track loaded with {len(track_data)} waypoints.")
 
     # --- 3. Load Vehicle Parameters ---
@@ -87,7 +90,18 @@ def main():
     # --- 5. Visualize the Results ---
     if optimal_speeds is not None:
         print("\n[Step 4] Optimization successful. Visualizing results...")
-        plot_speed_profile(track_data, optimal_speeds)
+        # Create an 'outputs' directory if it doesn't exist
+        output_dir = "outputs"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Get current timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"speed_profile_{timestamp}.png"
+        filepath = os.path.join(output_dir, filename)
+
+        plot_speed_profile(track_data, optimal_speeds, outer_points, inner_points, save_path=filepath)
+        print(f"Plot saved to {filepath}")
     else:
         print("\n[Step 4] Optimization failed. No results to visualize.")
 
