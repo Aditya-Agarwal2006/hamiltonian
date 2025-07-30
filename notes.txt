@@ -8,3 +8,6 @@ https://underactuated.csail.mit.edu/trajopt.html
 
 https://en.wikipedia.org/wiki/Optimal_control
 
+
+
+BROOO theres an F1 api called fastf1 apparently. ill be using that from now on lmao
