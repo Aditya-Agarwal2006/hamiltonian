@@ -39,17 +39,14 @@ def load_silverstone_track():
     outer_points[:, 1] = -outer_points[:, 1]
     inner_points[:, 1] = -inner_points[:, 1]
     
-    
+
     racing_line_points = np.zeros_like(outer_points)
     
     for i in range(len(outer_points)):
-        # Calculate centerline point
         centerline_point = (outer_points[i] + inner_points[i]) / 2.0
         
-        # Calculate track width at this point
         track_width = np.linalg.norm(outer_points[i] - inner_points[i])
         
-        # Calculate curvature at this point using centerline
         if i > 0 and i < len(outer_points) - 1:
             p_prev = centerline_point - (centerline_point - (outer_points[i-1] + inner_points[i-1]) / 2.0)
             p_curr = centerline_point
@@ -58,7 +55,6 @@ def load_silverstone_track():
             v1 = p_curr - p_prev
             v2 = p_next - p_curr
             
-            # Calculate curvature
             cross_mag = abs(v1[0] * v2[1] - v1[1] * v2[0])
             dist1 = np.linalg.norm(v1)
             dist2 = np.linalg.norm(v2)
@@ -70,12 +66,8 @@ def load_silverstone_track():
         else:
             curvature = 0
         
-        # Create racing line based on curvature
-        # For high curvature (tight corners), move toward the inside
-        # For low curvature (straights), stay more centered
-        curvature_factor = min(abs(curvature) * 50, 0.3)  # Limit the effect
+        curvature_factor = min(abs(curvature) * 50, 0.3)
         
-        # Calculate direction from inner to outer border
         border_direction = outer_points[i] - inner_points[i]
         border_direction = border_direction / np.linalg.norm(border_direction)
         
