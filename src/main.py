@@ -71,39 +71,29 @@ def load_silverstone_track():
         border_direction = outer_points[i] - inner_points[i]
         border_direction = border_direction / np.linalg.norm(border_direction)
         
-        # Adjust racing line position based on curvature
-        if abs(curvature) > 0.001:  # If there's significant curvature
-            # Move toward the inside of the corner
+        if abs(curvature) > 0.001:
             racing_line_points[i] = centerline_point - border_direction * track_width * (0.2 + curvature_factor)
         else:
-            # For straights, stay more centered
             racing_line_points[i] = centerline_point
     
-    # Calculate curvature for the racing line
     curvatures = np.zeros(len(racing_line_points))
     
-    # Calculate approximate curvature using finite differences
     for i in range(1, len(racing_line_points) - 1):
         p_prev = racing_line_points[i-1]
         p_curr = racing_line_points[i]
         p_next = racing_line_points[i+1]
         
-        # Vectors
         v1 = p_curr - p_prev
         v2 = p_next - p_curr
         
-        # Cross product magnitude
         cross_mag = abs(v1[0] * v2[1] - v1[1] * v2[0])
         
-        # Distance
         dist1 = np.linalg.norm(v1)
         dist2 = np.linalg.norm(v2)
         
         if dist1 > 0 and dist2 > 0:
-            # Curvature = cross product / (dist1 * dist2 * (dist1 + dist2))
             curvatures[i] = cross_mag / (dist1 * dist2 * (dist1 + dist2) + 1e-10)
     
-    # Create track_data array: [x, y, curvature] for the racing line
     track_data = np.column_stack([racing_line_points, curvatures])
     
     return track_data, outer_points, inner_points
