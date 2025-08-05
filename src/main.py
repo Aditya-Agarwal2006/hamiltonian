@@ -39,8 +39,7 @@ def load_silverstone_track():
     outer_points[:, 1] = -outer_points[:, 1]
     inner_points[:, 1] = -inner_points[:, 1]
     
-    # Create a proper racing line that follows the track
-    # Use the centerline as the base and then optimize it
+    
     racing_line_points = np.zeros_like(outer_points)
     
     for i in range(len(outer_points)):
