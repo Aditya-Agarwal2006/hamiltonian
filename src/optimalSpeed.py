@@ -1,8 +1,7 @@
-#made by grok 4 w perplexity
-
+#made by grok 4 w perplexity - enhanced with debugging
 
 """
-Optimal Racing Line Speed Profile Calculator
+Optimal Racing Line Speed Profile Calculator - Enhanced Debug Version
 
 This script calculates the optimal speed profile for a given racetrack using
 numerical optimization. It implements physics-based constraints for vehicle
@@ -11,6 +10,7 @@ dynamics including cornering limits, acceleration/braking limits, and tire grip.
 Author: Expert Python Developer
 Date: 2025
 Method: SciPy SLSQP constrained optimization
+Enhanced with better debugging and error handling
 """
 
 import numpy as np
@@ -18,7 +18,7 @@ from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 
 
-def calculate_optimal_speed(track_data, vehicle_params):
+def calculate_optimal_speed(track_data, vehicle_params, debug=True):
     """
     Calculate optimal speed profile for a racing line using SciPy optimization.
 
@@ -40,6 +40,9 @@ def calculate_optimal_speed(track_data, vehicle_params):
         - friction_coefficient: Tire-road friction coefficient (μ)
         - power_watts: Engine power in watts
 
+    debug : bool
+        If True, print debugging information during optimization
+
     Returns:
     --------
     numpy.ndarray
@@ -47,6 +50,8 @@ def calculate_optimal_speed(track_data, vehicle_params):
     """
 
     N = len(track_data)
+    if debug:
+        print(f"Optimizing speed profile for {N} waypoints")
 
     # Calculate distances between consecutive waypoints
     distances = np.zeros(N-1)
@@ -54,6 +59,12 @@ def calculate_optimal_speed(track_data, vehicle_params):
         dx = track_data[i+1, 0] - track_data[i, 0]
         dy = track_data[i+1, 1] - track_data[i, 1] 
         distances[i] = np.sqrt(dx**2 + dy**2)
+
+    if debug:
+        print(f"Segment distances: min={np.min(distances):.1f}m, max={np.max(distances):.1f}m, avg={np.mean(distances):.1f}m")
+        curvatures = track_data[:, 2]
+        print(f"Curvatures: min={np.min(curvatures):.6f}, max={np.max(curvatures):.6f}")
+        print(f"High curvature points (>0.01): {np.sum(curvatures > 0.01)}")
 
     # Physical constants
     g = 9.81  # Gravitational acceleration (m/s²)
@@ -66,6 +77,9 @@ def calculate_optimal_speed(track_data, vehicle_params):
     A = vehicle_params['frontal_area_m2']
     mu = vehicle_params['friction_coefficient']
     P = vehicle_params['power_watts']
+
+    if debug:
+        print(f"Vehicle: mass={m}kg, Cd={Cd}, Cl={Cl}, A={A}m², μ={mu}, P={P/1000:.0f}kW")
 
     # Helper functions for physical forces
     def drag_force(v):
@@ -89,7 +103,7 @@ def calculate_optimal_speed(track_data, vehicle_params):
         """
         total_time = 0
         for i in range(N-1):
-            if v[i] <= 0:
+            if v[i] <= 0.1:  # Minimum realistic speed
                 return 1e10  # Penalty for invalid speeds
             total_time += distances[i] / v[i]
         return total_time
@@ -111,7 +125,14 @@ def calculate_optimal_speed(track_data, vehicle_params):
         # Maximum grip force available
         max_available_grip = max_grip_force(v[i])
 
-        return max_available_grip - lateral_force_required
+        constraint_value = max_available_grip - lateral_force_required
+        
+        # Debug extremely tight constraints
+        if constraint_value < -100 and debug and i % 50 == 0:
+            max_speed = np.sqrt(max_available_grip / (abs(curvature) * m))
+            print(f"  Point {i}: tight corner constraint, max_speed={max_speed:.1f}m/s, current={v[i]:.1f}m/s")
+        
+        return constraint_value
 
     def acceleration_constraint(v, i):
         """
@@ -125,7 +146,7 @@ def calculate_optimal_speed(track_data, vehicle_params):
         # Change in kinetic energy
         kinetic_energy_increase = 0.5 * m * (v[i+1]**2 - v[i]**2)
 
-        if v[i] <= 0:
+        if v[i] <= 0.1:
             return -1000  # Invalid speed
 
         # Available propulsive force = Power/speed - drag
@@ -181,13 +202,40 @@ def calculate_optimal_speed(track_data, vehicle_params):
             'fun': lambda v, idx=i: braking_constraint(v, idx)
         })
 
-    # Set speed bounds (reasonable physical limits)
-    bounds = [(1.0, 100.0) for _ in range(N)]  # 1 to 100 m/s
+    if debug:
+        print(f"Created {len(constraints)} constraints ({N} cornering + {2*(N-1)} longitudinal)")
 
-    # Initial guess for speeds
-    v0 = np.full(N, 30.0)  # Start with 30 m/s everywhere
+    # Set speed bounds (reasonable physical limits)
+    # Calculate theoretical maximum speed based on power and drag
+    # At max speed: P = F_drag * v_max => v_max = (P / (0.5 * rho * A * Cd))^(1/3)
+    theoretical_max_speed = (P / (0.5 * rho_air * A * Cd))**(1/3)
+    practical_max_speed = min(theoretical_max_speed, 120.0)  # Cap at 120 m/s (432 km/h)
+    
+    bounds = [(2.0, practical_max_speed) for _ in range(N)]  # 2 to max m/s
+    
+    if debug:
+        print(f"Speed bounds: 2.0 to {practical_max_speed:.1f} m/s")
+
+    # Create a smarter initial guess
+    v0 = np.full(N, 30.0)  # Start with 30 m/s base speed
+    
+    # Adjust initial guess based on curvature
+    for i in range(N):
+        curvature = track_data[i, 2]
+        if curvature > 1e-6:
+            # Estimate corner speed based on grip limit
+            max_corner_speed = np.sqrt(max_grip_force(30.0) / (curvature * m))
+            v0[i] = min(max_corner_speed * 0.8, 50.0)  # Use 80% of theoretical max
+        else:
+            v0[i] = 40.0  # Higher speed for straights
+    
+    if debug:
+        print(f"Initial guess: min={np.min(v0):.1f}, max={np.max(v0):.1f}, avg={np.mean(v0):.1f} m/s")
 
     # Solve the constrained optimization problem
+    if debug:
+        print("Starting optimization...")
+    
     result = minimize(
         objective_function,
         v0,
@@ -195,18 +243,46 @@ def calculate_optimal_speed(track_data, vehicle_params):
         bounds=bounds,
         constraints=constraints,
         options={
-            'disp': True,      # Display convergence messages
-            'maxiter': 1000,   # Maximum iterations
-            'ftol': 1e-6       # Function tolerance
+            'disp': debug,         # Display convergence messages
+            'maxiter': 2000,       # Increased maximum iterations
+            'ftol': 1e-8,         # Tighter function tolerance
+            'eps': 1e-8           # Finite difference step size
         }
     )
 
+    if debug:
+        print(f"Optimization completed: success={result.success}")
+        print(f"Message: {result.message}")
+        print(f"Iterations: {result.nit}")
+        print(f"Function evaluations: {result.nfev}")
+
     if result.success:
+        if debug:
+            speeds = result.x
+            print(f"Final speeds: min={np.min(speeds):.1f}, max={np.max(speeds):.1f}, avg={np.mean(speeds):.1f} m/s")
+            print(f"Final speeds: min={np.min(speeds)*3.6:.0f}, max={np.max(speeds)*3.6:.0f}, avg={np.mean(speeds)*3.6:.0f} km/h")
+            
+            # Calculate final lap time
+            total_time = 0
+            total_distance = 0
+            for i in range(N-1):
+                total_time += distances[i] / speeds[i]
+                total_distance += distances[i]
+            
+            print(f"Lap time: {total_time:.2f} s")
+            print(f"Track length: {total_distance:.0f} m")
+            print(f"Average speed: {total_distance/total_time:.1f} m/s ({total_distance/total_time*3.6:.0f} km/h)")
+        
         return result.x
     else:
-        print(f"Optimization warning: {result.message}")
-        print("Returning best available solution...")
-        return result.x
+        if debug:
+            print(f"Optimization failed, but returning best attempt...")
+            if hasattr(result, 'x') and result.x is not None:
+                speeds = result.x
+                print(f"Best attempt speeds: min={np.min(speeds):.1f}, max={np.max(speeds):.1f} m/s")
+        
+        # Return the best attempt even if not fully converged
+        return result.x if hasattr(result, 'x') and result.x is not None else None
 
 
 if __name__ == '__main__':
@@ -216,7 +292,7 @@ if __name__ == '__main__':
     """
 
     print("=" * 60)
-    print("OPTIMAL RACING LINE SPEED PROFILE CALCULATOR")
+    print("OPTIMAL RACING LINE SPEED PROFILE CALCULATOR - DEBUG VERSION")
     print("=" * 60)
 
     # Create a more challenging test track with varying curvature
@@ -282,62 +358,22 @@ if __name__ == '__main__':
             print(f"  {key:25s}: {value:8.1f}")
 
     # Calculate optimal speed profile
-    print("\nRunning optimization...")
+    print("\nRunning optimization with debug output...")
     print("-" * 30)
 
-    optimal_speeds = calculate_optimal_speed(track_data, vehicle_params)
+    optimal_speeds = calculate_optimal_speed(track_data, vehicle_params, debug=True)
 
     if optimal_speeds is not None:
-        print("\nOptimization Results:")
-        print("-" * 30)
+        print("\n" + "=" * 60)
+        print("OPTIMIZATION RESULTS")
+        print("=" * 60)
         print(f"✓ Speed profile calculated successfully")
         print(f"  Number of waypoints: {len(optimal_speeds)}")
         print(f"  Speed range: {np.min(optimal_speeds):.1f} - {np.max(optimal_speeds):.1f} m/s")
         print(f"  Speed range: {np.min(optimal_speeds)*3.6:.0f} - {np.max(optimal_speeds)*3.6:.0f} km/h")
 
-        # Calculate track statistics
-        total_distance = 0
-        total_time = 0
-
-        for i in range(n_points-1):
-            dx = track_data[i+1, 0] - track_data[i, 0]
-            dy = track_data[i+1, 1] - track_data[i, 1]
-            segment_distance = np.sqrt(dx**2 + dy**2)
-            segment_time = segment_distance / optimal_speeds[i]
-
-            total_distance += segment_distance
-            total_time += segment_time
-
-        print(f"  Track length: {total_distance:.0f} m")
-        print(f"  Lap time: {total_time:.2f} s")
-        print(f"  Average speed: {total_distance/total_time:.1f} m/s ({total_distance/total_time*3.6:.0f} km/h)")
-
-        print("\nSpeed Profile by Waypoint:")
-        print("-" * 45)
-        print("Point  Speed(m/s)  Speed(km/h)  Curvature(1/m)")
-        print("-" * 45)
-
-        for i in range(len(optimal_speeds)):
-            curvature = track_data[i, 2]
-            corner_type = "Straight" if abs(curvature) < 1e-6 else f"R={1/curvature:.0f}m"
-            print(f"{i:5d}  {optimal_speeds[i]:9.1f}  {optimal_speeds[i]*3.6:10.0f}  {curvature:11.6f}  ({corner_type})")
-
-        # Show some physics calculations
-        print("\nPhysics Analysis (at maximum speed):")
-        print("-" * 40)
-        max_speed = np.max(optimal_speeds)
-        drag = 0.5 * 1.225 * vehicle_params['frontal_area_m2'] * vehicle_params['drag_coefficient'] * max_speed**2  
-        downforce = -0.5 * 1.225 * vehicle_params['frontal_area_m2'] * vehicle_params['downforce_coefficient'] * max_speed**2
-        grip = vehicle_params['friction_coefficient'] * (vehicle_params['mass_kg'] * 9.81 + downforce)
-
-        print(f"  Maximum speed: {max_speed:.1f} m/s ({max_speed*3.6:.0f} km/h)")
-        print(f"  Drag force: {drag:.0f} N")
-        print(f"  Downforce: {downforce:.0f} N ({downforce/9.81:.0f} kg)")
-        print(f"  Total grip available: {grip:.0f} N")
-        print(f"  Power required at max speed: {drag * max_speed / 1000:.0f} kW")
-
     else:
-        print("❌ Optimization failed!")
+        print("❌ Optimization failed completely!")
 
     print("\n" + "=" * 60)
     print("DEMONSTRATION COMPLETED")
