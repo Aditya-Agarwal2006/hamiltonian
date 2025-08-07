@@ -14,4 +14,6 @@ BROOO theres an F1 api called fastf1 apparently. ill be using that from now on l
 
 
 8/6/2025
-brute force least squares isnt gonna work out, pivoting to pinns.
+brute force least squares isnt gonna work out, pivoting to pinns. 
+
+using this proejct as my palantir demo 
