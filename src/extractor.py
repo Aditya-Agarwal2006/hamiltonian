@@ -109,7 +109,7 @@ class FastF1DataExtractor:
     def extract_track_geometry(self, session) -> TrackGeometry:
         """
         Extract track geometry using the fastest lap of the session.
-        This is a more robust method using built-in fastf1 features.
+        This method uses FastF1's built-in track boundary utilities.
         
         Args:
             session: FastF1 session object
@@ -125,29 +125,39 @@ class FastF1DataExtractor:
         driver = fastest_lap['Driver']
         print(f"Using fastest lap from {driver} ({fastest_lap.LapTime}) for geometry.")
 
-        # --- Get the telemetry for the fastest lap FIRST ---
+        # Get the telemetry for the fastest lap
         telemetry = fastest_lap.get_telemetry()
         if 'X' not in telemetry.columns or 'Y' not in telemetry.columns:
             raise ValueError("Telemetry for fastest lap is missing X/Y coordinates.")
         
-        # --- 1. Get official track boundaries using the UTILS function ---
-        try:
-            # Pass the X and Y coordinates to the utility function
-            boundaries_coords = utils.get_track_boundaries(telemetry['X'], telemetry['Y'])
-            track_bounds = {
-                'inner': boundaries_coords[0],
-                'outer': boundaries_coords[1]
-            }
-            print(f"  ✓ Extracted track boundaries.")
-        except Exception as e:
-            raise RuntimeError(f"Could not extract track boundaries: {e}")
-
-        # --- 2. Get the racing line from the same telemetry data ---
+        # Get racing line from telemetry
         racing_line = telemetry[['X', 'Y']].values
         racing_lines = {driver: racing_line}
         print(f"  ✓ Extracted racing line for {driver} with {len(racing_line)} points.")
         
-        # --- 3. Assemble the Geometry object ---
+        # Extract track boundaries using FastF1's utility function
+        try:
+            # The utils.get_track_boundaries function expects X and Y as separate arrays
+            x_coords = telemetry['X'].values
+            y_coords = telemetry['Y'].values
+            
+            # Get track boundaries - returns tuple of (inner, outer) boundary coordinates
+            inner_boundary, outer_boundary = utils.get_track_boundaries(x_coords, y_coords)
+            
+            track_bounds = {
+                'inner': inner_boundary,
+                'outer': outer_boundary
+            }
+            print(f"  ✓ Extracted track boundaries using FastF1 utilities.")
+            
+        except Exception as e:
+            print(f"  ⚠️ FastF1 boundary extraction failed: {e}")
+            print("  Falling back to custom boundary calculation...")
+            
+            # Fallback to custom boundary calculation
+            track_bounds = self.calculate_track_boundaries_fallback(session)
+        
+        # Assemble the Geometry object
         weekend = session.event
         metadata = {
             'track_name': weekend['EventName'],
@@ -165,6 +175,116 @@ class FastF1DataExtractor:
         
         print(f"✓ Track geometry extracted successfully.")
         return geometry
+    
+    def calculate_track_boundaries_fallback(self, session, num_drivers: int = 10) -> Dict[str, np.ndarray]:
+        """
+        Fallback method: Calculate track boundaries by aggregating telemetry data 
+        from multiple drivers and laps.
+        
+        Args:
+            session: FastF1 session object
+            num_drivers: Maximum number of drivers to use for boundary calculation
+        """
+        print("Calculating track boundaries from multiple drivers...")
+        
+        # Collect position data from multiple drivers
+        all_positions = []
+        drivers_used = 0
+        
+        # Get fastest lap from each driver
+        for driver in session.drivers[:num_drivers]:  # Limit to prevent excessive computation
+            try:
+                driver_laps = session.laps.pick_driver(driver)
+                clean_laps = self._filter_clean_laps(driver_laps)
+                
+                if len(clean_laps) > 0:
+                    # Get fastest clean lap for this driver
+                    fastest_lap = clean_laps.pick_fastest()
+                    telemetry = fastest_lap.get_telemetry()
+                    
+                    if len(telemetry) > 0 and 'X' in telemetry.columns and 'Y' in telemetry.columns:
+                        positions = telemetry[['X', 'Y']].values
+                        positions = positions[~np.isnan(positions).any(axis=1)]  # Remove NaN
+                        
+                        if len(positions) > 100:  # Ensure reasonable data length
+                            all_positions.append(positions)
+                            drivers_used += 1
+                            print(f"  ✓ Added {driver}: {len(positions)} points")
+                            
+            except Exception as e:
+                print(f"  ❌ Skipped {driver}: {e}")
+                continue
+        
+        if not all_positions:
+            raise ValueError("Could not extract position data from any driver")
+        
+        print(f"  Using telemetry from {drivers_used} drivers")
+        
+        # Combine all positions
+        combined_positions = np.vstack(all_positions)
+        print(f"  Total position points: {len(combined_positions)}")
+        
+        # Use the fastest lap as reference centerline
+        fastest_lap = session.laps.pick_fastest()
+        centerline = fastest_lap.get_telemetry()[['X', 'Y']].values
+        
+        # Calculate boundaries using perpendicular projection method
+        inner_boundary = []
+        outer_boundary = []
+        
+        for i in range(len(centerline) - 1):
+            p1 = centerline[i]
+            p2 = centerline[i + 1]
+            
+            # Calculate perpendicular vector
+            direction_vector = p2 - p1
+            if np.linalg.norm(direction_vector) == 0:
+                continue
+                
+            perp_vector = np.array([-direction_vector[1], direction_vector[0]])
+            perp_vector_normalized = perp_vector / np.linalg.norm(perp_vector)
+            
+            # Find points near this centerline segment
+            distances_to_center = np.linalg.norm(combined_positions - p1, axis=1)
+            nearby_mask = distances_to_center < 150  # 150m radius
+            nearby_points = combined_positions[nearby_mask]
+            
+            if len(nearby_points) < 5:
+                # Not enough points, use previous boundary points or skip
+                if len(inner_boundary) > 0:
+                    inner_boundary.append(inner_boundary[-1])
+                    outer_boundary.append(outer_boundary[-1])
+                continue
+            
+            # Project points onto perpendicular direction
+            projections = np.dot(nearby_points - p1, perp_vector_normalized)
+            
+            # Find extremes with some buffer
+            inner_dist = np.percentile(projections, 5) - 3  # 5th percentile minus 3m buffer
+            outer_dist = np.percentile(projections, 95) + 3  # 95th percentile plus 3m buffer
+            
+            inner_boundary.append(p1 + inner_dist * perp_vector_normalized)
+            outer_boundary.append(p1 + outer_dist * perp_vector_normalized)
+        
+        # Convert to arrays
+        inner_boundary = np.array(inner_boundary)
+        outer_boundary = np.array(outer_boundary)
+        
+        # Smooth the boundaries if we have enough points
+        if len(inner_boundary) > 10:
+            window = min(21, len(inner_boundary) if len(inner_boundary) % 2 == 1 else len(inner_boundary) - 1)
+            if window >= 3:
+                inner_boundary[:, 0] = savgol_filter(inner_boundary[:, 0], window, 2)
+                inner_boundary[:, 1] = savgol_filter(inner_boundary[:, 1], window, 2)
+                outer_boundary[:, 0] = savgol_filter(outer_boundary[:, 0], window, 2)
+                outer_boundary[:, 1] = savgol_filter(outer_boundary[:, 1], window, 2)
+        
+        print(f"  ✓ Calculated boundaries: {len(inner_boundary)} points each")
+        
+        return {
+            'inner': inner_boundary,
+            'outer': outer_boundary
+        }
     
     def extract_telemetry_data(self, session, max_laps_per_driver: int = 5) -> List[TelemetryData]:
         """
@@ -254,191 +374,12 @@ class FastF1DataExtractor:
         if len(clean) == 0:
             return clean
         
-        # Remove outliers (laps > 1.5x median time)
+        # Remove outliers (laps > 1.3x median time)
         median_time = clean['LapTime'].median()
         time_threshold = median_time * 1.3
         clean = clean[clean['LapTime'] <= time_threshold]
         
-        # Remove laps with track limits or yellow flags (if available)
-        if 'TrackStatus' in clean.columns:
-            clean = clean[clean['TrackStatus'] == 1]  # Green flag
-        
         return clean
-    
-    def _extract_track_boundaries(self, positions: np.ndarray) -> Dict[str, np.ndarray]:
-        """
-        Extract inner and outer track boundaries from position data
-        """
-        print("  Computing track boundaries...")
-        
-        # Method 1: Use convex hull for rough outer boundary
-        try:
-            hull = ConvexHull(positions)
-            outer_boundary = positions[hull.vertices]
-        except:
-            # Fallback: use extreme points
-            outer_boundary = self._get_extreme_boundary(positions, 'outer')
-        
-        # Method 2: Inner boundary from points closest to track center
-        center = np.mean(positions, axis=0)
-        distances = np.linalg.norm(positions - center, axis=1)
-        inner_percentile = np.percentile(distances, 20)  # Inner 20% of points
-        inner_mask = distances <= inner_percentile
-        inner_positions = positions[inner_mask]
-        
-        # Create smooth inner boundary
-        inner_boundary = self._smooth_boundary(inner_positions, center)
-        
-        return {
-            'outer': outer_boundary,
-            'inner': inner_boundary,
-            'center': center
-        }
-    
-    def _smooth_boundary(self, points: np.ndarray, center: np.ndarray) -> np.ndarray:
-        """Create smooth boundary from scattered points"""
-        # Convert to polar coordinates relative to center
-        relative = points - center
-        angles = np.arctan2(relative[:, 1], relative[:, 0])
-        radii = np.linalg.norm(relative, axis=1)
-        
-        # Sort by angle
-        sort_idx = np.argsort(angles)
-        angles_sorted = angles[sort_idx]
-        radii_sorted = radii[sort_idx]
-        
-        # Create smooth interpolation
-        angle_grid = np.linspace(-np.pi, np.pi, 200)
-        
-        try:
-            # Use spline interpolation with periodic boundary
-            spline = UnivariateSpline(angles_sorted, radii_sorted, s=len(points)*0.1)
-            radii_smooth = spline(angle_grid)
-        except:
-            # Fallback: linear interpolation
-            interp = interp1d(angles_sorted, radii_sorted, kind='linear', 
-                            bounds_error=False, fill_value='extrapolate')
-            radii_smooth = interp(angle_grid)
-        
-        # Convert back to cartesian
-        smooth_boundary = center + np.column_stack([
-            radii_smooth * np.cos(angle_grid),
-            radii_smooth * np.sin(angle_grid)
-        ])
-        
-        return smooth_boundary
-    
-    def _get_extreme_boundary(self, positions: np.ndarray, boundary_type: str) -> np.ndarray:
-        """Fallback method for boundary extraction"""
-        if boundary_type == 'outer':
-            # Find extreme points in different directions
-            center = np.mean(positions, axis=0)
-            angles = np.linspace(0, 2*np.pi, 32)
-            boundary_points = []
-            
-            for angle in angles:
-                direction = np.array([np.cos(angle), np.sin(angle)])
-                projections = np.dot(positions - center, direction)
-                max_idx = np.argmax(projections)
-                boundary_points.append(positions[max_idx])
-            
-            return np.array(boundary_points)
-        
-        return positions  # Fallback
-    
-    def calculate_track_boundaries(self, session: fastf1.Session, num_points=1000) -> Dict[str, np.ndarray]:
-        """
-        Calculates the inner and outer track boundaries from the telemetry data
-        of all laps in the session.
-
-        Args:
-            session: A loaded FastF1 session object.
-            num_points: The number of points to define the boundary lines with.
-
-        Returns:
-            A dictionary with 'inner' and 'outer' boundary lines as numpy arrays.
-        """
-        print("Calculating track boundaries from all driver telemetry...")
-
-        # 1. Aggregate all position data from all laps
-        laps = session.laps.pick_telemetry()
-        all_x = np.array([])
-        all_y = np.array([])
-
-        for _, lap in laps.iterrows():
-            try:
-                telemetry = lap.get_telemetry()
-                all_x = np.append(all_x, telemetry['X'].values)
-                all_y = np.append(all_y, telemetry['Y'].values)
-            except Exception:
-                continue
-                
-        if len(all_x) == 0:
-            raise ValueError("Could not find any valid telemetry data in the session.")
-
-        all_points = np.vstack((all_x, all_y)).T
-        print(f"  Aggregated {len(all_points)} total telemetry points.")
-
-        # 2. Use the fastest lap as a reference centerline
-        fastest_lap = session.laps.pick_fastest()
-        centerline = fastest_lap.get_telemetry()[['X', 'Y']].values
-        
-        # 3. For each point on the centerline, find the nearest points from the cloud
-        #    and determine the min/max distance to define the boundary.
-        inner_boundary = []
-        outer_boundary = []
-
-        for i in range(len(centerline) - 1):
-            p1 = centerline[i]
-            p2 = centerline[i+1]
-
-            # Vector perpendicular to the direction of the track
-            direction_vector = p2 - p1
-            perp_vector = np.array([-direction_vector[1], direction_vector[0]])
-            perp_vector_normalized = perp_vector / np.linalg.norm(perp_vector)
-
-            # Get a segment of all points close to the current centerline point
-            distances_to_center = np.linalg.norm(all_points - p1, axis=1)
-            # Consider points within a 100m radius to reduce computation
-            relevant_points = all_points[distances_to_center < 100]
-
-            if len(relevant_points) < 10:
-                continue
-
-            # Project these points onto the perpendicular vector
-            projections = np.dot(relevant_points - p1, perp_vector_normalized)
-
-            # The min/max projections define the boundary points for this segment
-            # Add a small buffer (e.g., 2 meters) for safety
-            inner_dist = np.min(projections) - 2
-            outer_dist = np.max(projections) + 2
-
-            inner_boundary.append(p1 + inner_dist * perp_vector_normalized)
-            outer_boundary.append(p1 + outer_dist * perp_vector_normalized)
-        
-        inner_boundary = np.array(inner_boundary)
-        outer_boundary = np.array(outer_boundary)
-
-        print(f"  Found {len(inner_boundary)} boundary segments.")
-
-        # 4. Smooth the boundary lines for a cleaner result
-        # The window length must be odd and less than the number of points.
-        window = min(51, len(inner_boundary) - 2 if len(inner_boundary) % 2 == 0 else len(inner_boundary) - 1)
-        
-        if window > 3: # Need at least a few points to smooth
-            inner_smooth_x = savgol_filter(inner_boundary[:, 0], window, 3)
-            inner_smooth_y = savgol_filter(inner_boundary[:, 1], window, 3)
-            outer_smooth_x = savgol_filter(outer_boundary[:, 0], window, 3)
-            outer_smooth_y = savgol_filter(outer_boundary[:, 1], window, 3)
-        else:
-            inner_smooth_x, inner_smooth_y = inner_boundary[:, 0], inner_boundary[:, 1]
-            outer_smooth_x, outer_smooth_y = outer_boundary[:, 0], outer_boundary[:, 1]
-
-        print("✓ Track boundary calculation complete.")
-        return {
-            'inner': np.vstack((inner_smooth_x, inner_smooth_y)).T,
-            'outer': np.vstack((outer_smooth_x, outer_smooth_y)).T
-        }
     
     def save_data(self, data, filename: str):
         """Save extracted data to cache"""
@@ -647,24 +588,11 @@ if __name__ == "__main__":
     session = extractor.get_session(2023, 'silverstone', 'Q')
     
     if session:
-        # --- NEW: Use the Point Cloud method for boundaries ---
-        boundaries = extractor.calculate_track_boundaries(session)
-        
-        # Get the fastest racing line for visualization and training
-        fastest_lap = session.laps.pick_fastest()
-        racing_line = fastest_lap.get_telemetry()[['X', 'Y']].values
-        
-        # Create the geometry object for saving and visualization
-        geometry = TrackGeometry(
-            name=session.event['EventName'],
-            year=session.date.year,
-            track_bounds=boundaries,
-            racing_lines={fastest_lap['Driver']: racing_line}
-        )
-        
+        # Extract track geometry (uses FastF1 utilities with fallback)
+        geometry = extractor.extract_track_geometry(session)
         extractor.save_data(geometry, 'silverstone_2023_geometry.pkl')
-
-        # The rest of your script can continue as before...
+        
+        # Extract telemetry data  
         telemetry_data = extractor.extract_telemetry_data(session, max_laps_per_driver=3)
         extractor.save_data(telemetry_data, 'silverstone_2023_telemetry.pkl')
         
@@ -673,7 +601,7 @@ if __name__ == "__main__":
             dataset = extractor.create_training_dataset(telemetry_data, resample_points=1000)
             extractor.save_data(dataset, 'silverstone_2023_training.pkl')
         
-        # Visualize the results
+        # Visualize results
         visualize_track_data(geometry, telemetry_data)
         
         print(f"\n✓ Data extraction complete!")
