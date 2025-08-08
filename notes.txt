@@ -17,3 +17,11 @@ BROOO theres an F1 api called fastf1 apparently. ill be using that from now on l
 brute force least squares isnt gonna work out, pivoting to pinns. 
 
 using this proejct as my palantir demo thing for internship
+
+
+from fastf1 api - extracting 3 inputs
+driver racing lines
+track boundaries - point cloud method from driver coords
+speed profile from real drivers
+
+using "dummy" vehicle data
